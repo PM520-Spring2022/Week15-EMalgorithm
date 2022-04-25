@@ -1,0 +1,320 @@
+---
+title: "EM algorithm - Worked Example"
+author: "Paul M"
+date: "4/13/2022"
+output: html_document
+---
+
+This is an example of the Expectation-Maximization Algorithm (EM-Algorithm). We will use it to explore a sample in which datapoints come from a mixture of two normal distributions.
+
+(Based on an example at https://tinyheero.github.io/2016/01/03/gmm-em.html and Roger Peng's book "Advanced Statistical Computing" (https://bookdown.org/rdpeng/advstatcomp/))
+
+First, let's do some set-up.
+
+```{r libraries, echo=FALSE, message=FALSE}
+library("ggplot2")
+library("dplyr")
+library("reshape2")
+```
+
+Next create the data, which is going to be a mixture of a Normal(1,0.5) and Normal(1,0.5), and then look at it in various ways:
+```{r setup,message=FALSE}
+set.seed(44)
+FirstMean <- 1
+SecondMean <- 1.5
+FirstSD <- 0.5
+SecondSD <- 0.5
+
+comp1.vals <- tibble(comp = "A", 
+                         vals = rnorm(250, mean = FirstMean, sd = FirstSD))
+comp2.vals <- tibble(comp = "B", 
+                         vals = rnorm(250, mean = SecondMean, sd = SecondSD))
+vals.df <- bind_rows(comp1.vals, comp2.vals)
+
+
+# Create base plots
+vals.df %>%
+   ggplot(aes(x = vals,fill=comp)) +
+     geom_histogram()  +
+     facet_grid(comp ~ .)
+
+vals.df %>%
+  mutate(num = row_number()) %>%
+  ggplot(aes(x = vals, y = num, color = comp)) +
+  geom_point(alpha = 0.4) +
+  #scale_color_discrete(name = "K-means Cluster") +
+  xlab("Values") +
+  theme(axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "top")
+```
+
+There is a good deal of overlap between the two groups, so it would be very hard to cluster them correctly.
+
+As a baseline, let's estimate the mean and SD of the two normal distributions pretending we knew which distribution each datapoint came from.
+```{r MLEs}
+vals.df %>%
+  group_by(comp) %>%
+  summarize(mean_vals = mean(vals),
+            sd_vals = sd(vals))
+
+```
+
+Which is not far from the truth. 
+
+The EM algorithm consists of 3 major steps:
+
+1. Initialization
+2. Expectation (E-step)
+3. Maximization (M-step)
+
+Steps 2 and 3 are repeated until convergence. 
+
+Informally, these steps work as follows:
+
+1. Set some initial parameter estimates on your object of interest (here the gaussian distributions).
+2. Probabilistically assign (label) the data to the gaussians based on their probability of generating the data.
+3. Treat the labels as being correct and then use MLE to re-estimate the parameters for the two gaussians.
+
+Repeat steps 2 and 3 until there is convergence.
+
+We often use K-means clustering to determine a set of initial labels for the datapoints and then conduct the parameter initialization step (step 1 above) by assuming those labels are correct. Let's do that here:
+
+```{r cluster}
+
+vals.kmeans <- kmeans(vals.df$vals, 2)
+vals.df$cluster <- vals.kmeans$cluster
+
+vals.df %>%
+  mutate(num = row_number()) %>%
+  ggplot(aes(x = vals, y = num, color = factor(cluster))) +
+  geom_point(alpha = 0.4) +
+  scale_color_discrete(name = "K-means Cluster") +
+  xlab("Values") +
+  theme(axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "top")
+```
+
+K-means splits the data into two clusters, but clearly some of the datapoints are mis-assigned. Let's look at the mean and std. dev, of the two groups:
+```{r KmeansStats}
+vals.summary.df  <- vals.df %>%
+  group_by(cluster) %>%
+  summarize(mean = mean(vals),
+            sd = sd(vals), size = n())
+
+vals.summary.df
+```
+
+The means and std. devs are estimated incorrectly because the data are clustered incorrectly.
+
+
+We will now code up a manual version of the two steps of the EM algorithm to see if we can do a better job:
+
+```{r EMimplementation}
+#' Expectation Step of the EM Algorithm
+#'
+#' Calculate the posterior probabilities (soft labels) that each component
+#' has to each data point.
+#'
+#' @param sd.vector Vector containing the standard deviations of each component
+#' @param sd.vector Vector containing the mean of each component
+#' @param alpha.vector Vector containing the mixing weights  of each component
+#' @return Named list containing the loglik and posterior.df
+e_step <- function(x, mu.vector, sd.vector, alpha.vector) {
+  comp1.prod <- dnorm(x, mu.vector[1], sd.vector[1]) * alpha.vector[1]
+  comp2.prod <- dnorm(x, mu.vector[2], sd.vector[2]) * alpha.vector[2]
+  sum.of.comps <- comp1.prod + comp2.prod
+  comp1.post <- comp1.prod / sum.of.comps
+  comp2.post <- comp2.prod / sum.of.comps
+
+  sum.of.comps.ln <- log(sum.of.comps, base = exp(1))
+  sum.of.comps.ln.sum <- sum(sum.of.comps.ln)
+
+  list("loglik" = sum.of.comps.ln.sum,
+       "posterior.df" = cbind(comp1.post, comp2.post))
+}
+
+#' Maximization Step of the EM Algorithm
+#'
+#' Update the Component Parameters
+#'
+#' @param x Input data.
+#' @param posterior.df Posterior probability data.frame.
+#' @return Named list containing the mean (mu), variance (var), and mixing
+#'   weights (alpha) for each component.
+m_step <- function(x, posterior.df) {
+  comp1.n <- sum(posterior.df[, 1])
+  comp2.n <- sum(posterior.df[, 2])
+
+  comp1.mu <- 1/comp1.n * sum(posterior.df[, 1] * x)
+  comp2.mu <- 1/comp2.n * sum(posterior.df[, 2] * x)
+
+  comp1.var <- sum(posterior.df[, 1] * (x - comp1.mu)^2) * 1/comp1.n
+  comp2.var <- sum(posterior.df[, 2] * (x - comp2.mu)^2) * 1/comp2.n
+
+  comp1.alpha <- comp1.n / length(x)
+  comp2.alpha <- comp2.n / length(x)
+
+  list("mu" = c(comp1.mu, comp2.mu),
+       "var" = c(comp1.var, comp2.var),
+       "alpha" = c(comp1.alpha, comp2.alpha))
+}
+```
+
+Now we run the EM iterations, starting with initial assignments given by the k-Means clusters.
+
+We generate the initial mixing weights as follows:
+```{r}
+vals.summary.df <- vals.summary.df %>%
+  mutate(alpha = size / sum(size))
+
+vals.summary.df 
+```
+
+
+
+
+We now need to calculate the prob. that data-point $x_i$ belongs to component $k_j$.
+We do this using Bayes' rule
+$P(x_i∈k_j|x_i)=P(x_i|x_i∈k_j)P(k_j)/P(x_i)$
+as follows:
+```{r likelihood_numerator}
+comp1.prod <- dnorm(x = vals.df$vals, mean = vals.summary.df$mean[1], 
+                    sd = vals.summary.df$sd[1]) * vals.summary.df$alpha[1]
+
+comp2.prod <- dnorm(x = vals.df$vals, mean = vals.summary.df$mean[2], 
+                    sd = vals.summary.df$sd[2]) * vals.summary.df$alpha[2]
+
+normalizer <- comp1.prod + comp2.prod
+
+comp1.post <- comp1.prod / normalizer
+comp2.post <- comp2.prod / normalizer
+```
+
+
+
+## Maximization: Re-estimate the Component Parameters (M-step)
+
+Now that we have posterior probabilites (i.e., soft 'initial' labels), we can re-estimate our component parameters. We simply adjust to the MLE equations that we specified early. Specifically, the $N_k$  is replaced with the posterior probability $P(x_i∈k_j|x_i)$ in each equation. (So rather than assigning each point entirely to one cluster or the other, we assign them probabilistically.)
+
+$μ_k=\frac{\sum^N_iP(x_i∈k_j|x_i)x_i}{\sum^N_iP(x_i∈k_j|x_i)}$
+
+$σ^2_k=\frac{\sum^N_iP(x_i∈k_j|_xi)(x_i−μ_k)^2}{\sum^N_iP(x_i∈k_j|x_i)}$
+
+$α_k= \frac{\sum^N_iP(x_i∈k_j|xi)}{N}$
+
+With these equations, we can now plug in our values and calculate the components parameters using our example from above:
+
+```{r, ParamEst}
+comp1.n <- sum(comp1.post)
+comp2.n <- sum(comp2.post)
+
+comp1.mu <- 1/comp1.n * sum(comp1.post * vals.df$vals)
+comp2.mu <- 1/comp2.n * sum(comp2.post * vals.df$vals)
+
+comp1.var <- sum(comp1.post * (vals.df$vals - comp1.mu)^2) * 1/comp1.n
+comp2.var <- sum(comp2.post * (vals.df$vals - comp2.mu)^2) * 1/comp2.n
+
+comp1.alpha <- comp1.n / length(vals.df$vals)
+comp2.alpha <- comp2.n / length(vals.df$vals)
+
+comp.params.df <- data.frame(comp = c("comp1", "comp2"),
+                             comp.mu = c(comp1.mu, comp2.mu),
+                             comp.var = c(comp1.var, comp2.var),
+                             comp.alpha = c(comp1.alpha, comp2.alpha),
+                             comp.cal = c("self", "self"))
+(comp.params.df)
+```
+
+## Checking for Convergence
+
+We will check for convergence by monitoring the log-likelihood.
+
+So now we run our manual version of the iterative EM algorithm:
+```{r test2}
+#ourvals <- vals.df$vals
+for (i in 1:50) {
+  if (i == 1) {
+    # Initialization
+    e.step <- e_step(x=vals.df$vals, vals.summary.df[["mean"]], vals.summary.df[["sd"]],
+                     vals.summary.df[["alpha"]])
+    m.step <- m_step(vals.df$vals, e.step[["posterior.df"]])
+    cur.loglik <- e.step[["loglik"]]
+    loglik.vector <- e.step[["loglik"]]
+  } else {
+    # Repeat E and M steps till convergence
+    e.step <- e_step(vals.df$vals, m.step[["mu"]], sqrt(m.step[["var"]]), 
+                     m.step[["alpha"]])
+    m.step <- m_step(vals.df$vals, e.step[["posterior.df"]])
+    loglik.vector <- c(loglik.vector, e.step[["loglik"]])
+
+    loglik.diff <- abs((cur.loglik - e.step[["loglik"]]))
+    if(loglik.diff < 1e-6) {
+      break
+    } else {
+      cur.loglik <- e.step[["loglik"]]
+    }
+  }
+}
+loglik.vector
+
+```
+
+The algorithm stopped after about 50 iterations because the log-likelighood appears to have con verged. Let's see what we got. First, let's look at the estimates for the gaussians:
+
+```{r, estimates}
+m.step
+```
+We can see that these are much closer to the truth.
+
+Now the mixture model itself:
+```{r mixture}
+plot_mix_comps <- function(x, mu, sigma, lam) {
+  lam * dnorm(x, mu, sigma)
+}
+
+data.frame(x = vals.df$vals) %>%
+  ggplot() +
+  geom_histogram(aes(x, ..density..), binwidth = 0.1, colour = "black", 
+                 fill = "white") +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(m.step$mu[1], sqrt(m.step$var[1]), 
+                           lam = m.step$alpha[1]),
+                colour = "red", lwd = 1.5) +
+  stat_function(geom = "line", fun = plot_mix_comps,
+                args = list(m.step$mu[2], sqrt(m.step$var[2]), 
+                           lam = m.step$alpha[2]),
+                colour = "blue", lwd = 1.5) +
+  ylab("Density") +
+  xlab("Values") +
+  ggtitle("Final GMM Fit")
+```
+
+## Built-in EM algorithms
+
+Of course, R has built-in functions to do all this for us. So let's repeat the analysis using one of  those functions. There are lots of different implementations in R. Here we will use the "mixtools" library, and use its normalmixEM() function which works for Gaussian mixture models). 
+```{r, EasyWay, warning=FALSE}
+
+library(mixtools)
+gm<-normalmixEM(vals.df$vals,k=2,lambda=c(0.5,0.5),mu=c(0.8,1.6),sigma=c(0.5,0.5),epsilon=1e-5)
+plot(gm,density=TRUE, cex.axis=1.4, cex.lab=1.4, cex.main=1.8,main2="Resulting mixtures",breaks=25)
+gm$mu
+gm$sigma
+```
+
+## Another example
+
+We give an example using the "Olf Faithful" built-in dataset. This is taken from the documentation for mixtools (https://cran.r-project.org/web/packages/mixtools/vignettes/mixtools.pdf)
+
+```{r, eg2}
+data(faithful)
+attach(faithful)
+hist(waiting, main="Time between Old Faithful eruptions",xlab="Minutes", ylab="", cex.main=1.5, cex.lab=1.5, cex.axis=1.4)
+
+wait1 <- normalmixEM(waiting, lambda = .5, mu = c(55, 80), sigma = 5)
+plot(wait1, density=TRUE, cex.axis=1.4, cex.lab=1.4, cex.main=1.8,main2="Time between Old Faithful eruptions", xlab2="Minutes")
+summary(wait1)
+```
