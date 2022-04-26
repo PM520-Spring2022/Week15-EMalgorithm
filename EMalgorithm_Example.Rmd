@@ -7,7 +7,7 @@ output: html_document
 
 This is an example of the Expectation-Maximization Algorithm (EM-Algorithm). We will use it to explore a sample in which datapoints come from a mixture of two normal distributions.
 
-(Based on an example at https://tinyheero.github.io/2016/01/03/gmm-em.html and Roger Peng's book "Advanced Statistical Computing" (https://bookdown.org/rdpeng/advstatcomp/))
+[Based on an example at https://tinyheero.github.io/2016/01/03/gmm-em.html and Roger Peng's book "Advanced Statistical Computing" (https://bookdown.org/rdpeng/advstatcomp/).]
 
 First, let's do some set-up.
 
@@ -17,7 +17,7 @@ library("dplyr")
 library("reshape2")
 ```
 
-Next create the data, which is going to be a mixture of a Normal(1,0.5) and Normal(1,0.5), and then look at it in various ways:
+Next we create the data, which is going to be a mixture of a Normal(1,0.5) and Normal(1,0.5), and then look at it in various ways:
 ```{r setup,message=FALSE}
 set.seed(44)
 FirstMean <- 1
@@ -42,7 +42,6 @@ vals.df %>%
   mutate(num = row_number()) %>%
   ggplot(aes(x = vals, y = num, color = comp)) +
   geom_point(alpha = 0.4) +
-  #scale_color_discrete(name = "K-means Cluster") +
   xlab("Values") +
   theme(axis.ticks.y = element_blank(),
         axis.text.y = element_blank(),
@@ -181,7 +180,7 @@ We now need to calculate the prob. that data-point $x_i$ belongs to component $k
 We do this using Bayes' rule
 $P(x_i∈k_j|x_i)=P(x_i|x_i∈k_j)P(k_j)/P(x_i)$
 as follows:
-```{r likelihood_numerator}
+```{r likelihood_calc}
 comp1.prod <- dnorm(x = vals.df$vals, mean = vals.summary.df$mean[1], 
                     sd = vals.summary.df$sd[1]) * vals.summary.df$alpha[1]
 
@@ -198,7 +197,7 @@ comp2.post <- comp2.prod / normalizer
 
 ## Maximization: Re-estimate the Component Parameters (M-step)
 
-Now that we have posterior probabilites (i.e., soft 'initial' labels), we can re-estimate our component parameters. We simply adjust to the MLE equations that we specified early. Specifically, the $N_k$  is replaced with the posterior probability $P(x_i∈k_j|x_i)$ in each equation. (So rather than assigning each point entirely to one cluster or the other, we assign them probabilistically.)
+Now that we have posterior probabilites (i.e., soft 'initial' labels), we can re-estimate our component parameters. We simply adjust the MLE equations that we specified early. Specifically, the $N_k$  is replaced with the posterior probability $P(x_i∈k_j|x_i)$ in each equation. (So rather than assigning each point entirely to one cluster or the other, we assign them probabilistically.)
 
 $μ_k=\frac{\sum^N_iP(x_i∈k_j|x_i)x_i}{\sum^N_iP(x_i∈k_j|x_i)}$
 
@@ -236,7 +235,7 @@ We will check for convergence by monitoring the log-likelihood.
 So now we run our manual version of the iterative EM algorithm:
 ```{r test2}
 #ourvals <- vals.df$vals
-for (i in 1:50) {
+for (i in 1:100) {
   if (i == 1) {
     # Initialization
     e.step <- e_step(x=vals.df$vals, vals.summary.df[["mean"]], vals.summary.df[["sd"]],
@@ -252,7 +251,7 @@ for (i in 1:50) {
     loglik.vector <- c(loglik.vector, e.step[["loglik"]])
 
     loglik.diff <- abs((cur.loglik - e.step[["loglik"]]))
-    if(loglik.diff < 1e-6) {
+    if(loglik.diff < 1e-5) {
       break
     } else {
       cur.loglik <- e.step[["loglik"]]
@@ -263,7 +262,7 @@ loglik.vector
 
 ```
 
-The algorithm stopped after about 50 iterations because the log-likelighood appears to have con verged. Let's see what we got. First, let's look at the estimates for the gaussians:
+The algorithm stopped after 100 iterations without quite converging, but it seems to have largely converged, so let's see what we got. First, let's look at the estimates for the gaussians:
 
 ```{r, estimates}
 m.step
